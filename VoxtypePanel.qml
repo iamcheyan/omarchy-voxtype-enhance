@@ -16,7 +16,9 @@ Panel {
     property bool loading: false
     property real downloadProgress: -1
     property string pendingAction: ""
+    property string pendingModelId: ""
     property string statusText: ""
+    property bool statusIsError: false
     property string engine: "sensevoice"
     property string model: "small-int8"
     property string modelId: ""
@@ -49,15 +51,26 @@ Panel {
         writeProcess.command = ["python3", root.configTool, "set", setting, value];
         root.loading = true;
         root.pendingAction = setting === "model" ? "model" : "setting";
-        if (setting === "model") root.modelId = value;
+        root.pendingModelId = setting === "model" ? value : "";
         root.downloadProgress = setting === "model" ? 0 : -1;
         root.statusText = setting === "model" ? "Downloading and verifying model…" : "Applying…";
+        root.statusIsError = false;
         writeProcess.running = true;
     }
-    function updateDownloadProgress(line) {
-        if (!line.startsWith("VOXTYPE_ENHANCE_PROGRESS ")) return;
-        const fields = line.split(" ");
-        if (fields.length >= 2) root.downloadProgress = Number(fields[1]);
+    function updateDownloadProgress(raw) {
+        const lines = String(raw || "").split("\n");
+        for (let index = lines.length - 1; index >= 0; index--) {
+            if (!lines[index].startsWith("VOXTYPE_ENHANCE_PROGRESS ")) continue;
+            const fields = lines[index].split(" ");
+            if (fields.length >= 2) root.downloadProgress = Number(fields[1]);
+            return;
+        }
+    }
+    function processError(raw, fallback) {
+        const lines = String(raw || "").split("\n").filter(function(line) {
+            return line.length > 0 && !line.startsWith("VOXTYPE_ENHANCE_PROGRESS ");
+        });
+        return lines.length > 0 ? lines.join("\n") : fallback;
     }
     function modelInstalled(modelId) {
         return root.installedModels.indexOf(modelId) >= 0;
@@ -67,8 +80,10 @@ Panel {
         writeProcess.command = ["python3", root.configTool, "clear"];
         root.loading = true;
         root.pendingAction = "clear";
+        root.pendingModelId = "";
         root.downloadProgress = -1;
         root.statusText = "Clearing models and restoring defaults…";
+        root.statusIsError = false;
         writeProcess.running = true;
     }
     function applySnapshot(raw) {
@@ -76,7 +91,8 @@ Panel {
             const data = JSON.parse(raw);
             if (data.error) {
                 root.statusText = data.error;
-                return;
+                root.statusIsError = true;
+                return false;
             }
             root.engine = data.engine || "whisper";
             root.model = data.model || "small";
@@ -85,8 +101,11 @@ Panel {
             root.language = data.language || "auto";
             root.outputMode = data.mode || "type";
             root.pasteKeys = data.paste_keys || "ctrl+v";
+            return true;
         } catch (error) {
             root.statusText = "Could not read Voxtype configuration";
+            root.statusIsError = true;
+            return false;
         }
     }
     function rowColor(active) {
@@ -99,10 +118,16 @@ Panel {
         id: readProcess
         command: ["python3", root.configTool, "get"]
         running: false
-        property string buffer: ""
-        stdout: SplitParser { splitMarker: "\n"; onRead: function(line) { readProcess.buffer += line; } }
-        onRunningChanged: {
-            if (!running) { root.applySnapshot(buffer); buffer = ""; }
+        stdout: StdioCollector { id: readStdout; waitForEnd: true }
+        stderr: StdioCollector { id: readStderr; waitForEnd: true }
+        onExited: function(exitCode) {
+            const output = String(readStdout.text || "").trim();
+            if (exitCode !== 0 || output.length === 0) {
+                root.statusText = root.processError(readStderr.text, "Could not read Voxtype configuration");
+                root.statusIsError = true;
+                return;
+            }
+            root.applySnapshot(output);
         }
     }
 
@@ -110,23 +135,33 @@ Panel {
         id: writeProcess
         command: ["python3", root.configTool, "set", "mode", "paste"]
         running: false
-        property string buffer: ""
-        stdout: SplitParser { splitMarker: "\n"; onRead: function(line) { writeProcess.buffer += line; } }
-        stderr: SplitParser { splitMarker: "\n"; onRead: function(line) { root.updateDownloadProgress(line); } }
-        onRunningChanged: {
-            if (!running) {
-                root.loading = false;
-                root.downloadProgress = -1;
-                if (buffer.length > 0) root.applySnapshot(buffer);
-                if (buffer.indexOf('"error"') < 0) {
-                    root.statusText = root.pendingAction === "clear"
-                        ? "Defaults restored; select a model to download."
-                        : "Voxtype restarted with the new setting";
-                }
-                root.pendingAction = "";
-                buffer = "";
-                clearStatus.restart();
+        stdout: StdioCollector { id: writeStdout; waitForEnd: true }
+        stderr: StdioCollector {
+            id: writeStderr
+            waitForEnd: true
+            onTextChanged: root.updateDownloadProgress(text)
+        }
+        onExited: function(exitCode) {
+            root.loading = false;
+            root.downloadProgress = -1;
+            const output = String(writeStdout.text || "").trim();
+            const snapshotOk = output.length > 0 && root.applySnapshot(output);
+            const succeeded = exitCode === 0 && snapshotOk;
+            if (succeeded) {
+                root.statusText = root.pendingAction === "clear"
+                    ? "Defaults restored; select a model to download."
+                    : "Voxtype restarted with the new setting";
+                root.statusIsError = false;
+            } else if (snapshotOk || output.length === 0) {
+                root.statusText = root.processError(writeStderr.text, "Could not apply the Voxtype setting");
+                root.statusIsError = true;
             }
+            // Download progress is transient; restore authoritative model
+            // state on every failed write.
+            if (!succeeded) root.refresh();
+            root.pendingAction = "";
+            root.pendingModelId = "";
+            if (succeeded) clearStatus.restart();
         }
     }
 
@@ -177,25 +212,28 @@ Panel {
                             required property var modelData
                             width: content.width
                             height: Style.space(48)
-                            property bool selected: root.modelId === modelData.id && (root.modelInstalled(modelData.id) || root.loading)
+                            property bool installed: root.modelInstalled(modelData.id)
+                            property bool selected: root.modelId === modelData.id && installed
                             color: root.rowColor(selected)
                             border.width: 1; border.color: selected ? Color.accent : Color.muted
                             Column {
                                 anchors.fill: parent; anchors.margins: Style.space(7); spacing: 1
                                 Text { text: modelData.title; color: root.barForeground; font.bold: true; font.pixelSize: Style.font.body }
                                 Text {
-                                    text: root.loading && root.modelId === modelData.id
+                                    text: root.loading && root.pendingModelId === modelData.id
                                         ? (root.downloadProgress >= 0
                                             ? "Downloading and verifying · " + Math.round(root.downloadProgress * 100) + "%"
                                             : "Downloading and verifying…")
-                                        : (root.modelInstalled(modelData.id) ? modelData.detail : "Not downloaded · click to download")
-                                    color: root.loading && root.modelId === modelData.id ? Color.accent : Color.muted
+                                        : (installed
+                                            ? modelData.detail + (selected ? " · active" : " · downloaded, not active")
+                                            : "Not downloaded · click to download")
+                                    color: root.loading && root.pendingModelId === modelData.id ? Color.accent : Color.muted
                                     font.pixelSize: Style.font.caption
                                 }
                             }
                             Rectangle {
                                 id: progressTrack
-                                visible: root.loading && root.modelId === modelData.id
+                                visible: root.loading && root.pendingModelId === modelData.id
                                 anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
                                 height: Style.space(3)
                                 color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.2)
@@ -265,7 +303,7 @@ Panel {
 
                 Text {
                     text: root.statusText.length > 0 ? root.statusText : "Universal paste uses Shift+Insert in terminals and Ctrl+V in graphical apps."
-                    color: root.statusText.length > 0 ? Color.accent : Color.muted
+                    color: root.statusIsError ? Color.urgent : (root.statusText.length > 0 ? Color.accent : Color.muted)
                     wrapMode: Text.WordWrap; width: parent.width
                     font.pixelSize: Style.font.caption
                 }

@@ -46,7 +46,15 @@ The panel shows model names rather than engine names. Selecting a model download
 | SenseVoice Small · full precision | `sensevoice` | `small` | 894 MB |
 | Paraformer Large · int8 | `paraformer` | `paraformer-zh` | 232 MB |
 
-Only an installed model is shown as selected. When no model is installed, all model cards remain unselected. Downloads use the pinned Sasayaki Hugging Face sources and SHA-256 manifests. Already verified files are skipped.
+Only the model confirmed as active in Voxtype is highlighted. A downloaded model
+that is not active is labelled `downloaded, not active`; a failed engine switch
+shows the Voxtype/systemd error and restores the effective selection. Downloads
+use the pinned Sasayaki Hugging Face sources and SHA-256 manifests. Already
+verified files are skipped.
+
+SenseVoice and Paraformer require an ONNX-capable Voxtype binary. If Voxtype
+rejects one of those engines because the active binary lacks ONNX support, the
+panel reports that error instead of presenting the model switch as successful.
 
 Models are stored under:
 
@@ -105,6 +113,7 @@ omarchy plugin validate .
 /usr/lib/qt6/bin/qmllint -I /usr/share/omarchy/shell \
   bar/widget.qml VoxtypePanel.qml
 python3 -m py_compile scripts/*.py
+python3 -m unittest discover -s tests -v
 ```
 
 ## License

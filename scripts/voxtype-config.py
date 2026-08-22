@@ -135,12 +135,41 @@ def set_value(text: str, section: str, key: str, new_value: str) -> str:
 
 
 def restart_daemon() -> None:
-    subprocess.run(
+    result = subprocess.run(
         ["systemctl", "--user", "restart", "voxtype.service"],
         check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
     )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(detail or "Could not restart voxtype.service")
+
+
+def set_engine(engine: str) -> None:
+    """Switch engine through Voxtype so binary feature gates stay authoritative."""
+    result = subprocess.run(
+        ["voxtype", "config", "set", "engine", engine.lower()],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip()
+        raise RuntimeError(detail or f"Voxtype rejected the {engine} engine")
+
+
+def verify_model_selection(selected: dict[str, object]) -> None:
+    """Reject false success when the requested engine/model did not persist."""
+    actual = config_snapshot()
+    expected_engine = str(selected["engine"])
+    expected_model = str(selected["model"])
+    if actual["engine"] != expected_engine or actual["model"] != expected_model:
+        raise RuntimeError(
+            "Voxtype configuration did not retain the selected model "
+            f"(expected {expected_engine}/{expected_model}, got "
+            f"{actual['engine']}/{actual['model']})"
+        )
 
 
 def sha256_file(path: Path) -> str:
@@ -212,14 +241,7 @@ def reset_plugin_data() -> None:
         if model_dir.is_dir():
             shutil.rmtree(model_dir)
 
-    result = subprocess.run(
-        ["voxtype", "config", "set", "engine", "sensevoice"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise SystemExit(result.stderr.strip() or "Voxtype rejected the default engine")
+    set_engine("sensevoice")
 
     text = read_text()
     text = set_value(text, "sensevoice", "model", "small-int8")
@@ -284,14 +306,7 @@ def set_setting(setting: str, new_value: str) -> None:
         # The user-facing model ID carries both pieces of information.  Keep
         # engine switching in Voxtype's own validated CLI, then write the
         # model in that engine's section.
-        result = subprocess.run(
-            ["voxtype", "config", "set", "engine", selected["engine"]],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise SystemExit(result.stderr.strip() or "Voxtype rejected the engine")
+        set_engine(str(selected["engine"]))
         # `voxtype config set` may normalize or add the engine section.  Do
         # not overwrite that fresh configuration with the snapshot read
         # before the engine switch (this used to switch Paraformer back to
@@ -300,19 +315,13 @@ def set_setting(setting: str, new_value: str) -> None:
         text = set_value(text, selected["engine"], "model", selected["model"])
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(text, encoding="utf-8")
+        verify_model_selection(selected)
         restart_daemon()
         return
     elif setting == "engine":
         # Use Voxtype's own validated mutator so compiled-feature checks and
         # future config format changes remain owned by Voxtype.
-        result = subprocess.run(
-            ["voxtype", "config", "set", "engine", new_value.lower()],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise SystemExit(result.stderr.strip() or "Voxtype rejected the engine")
+        set_engine(new_value)
         restart_daemon()
         return
     elif setting == "language":
