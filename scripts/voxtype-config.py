@@ -369,7 +369,7 @@ def install_arm_onnx() -> None:
             if shutil.which("pkexec") is None:
                 raise RuntimeError("pkexec is required to install the ARM ONNX Voxtype binary")
             result = subprocess.run(
-                ["pkexec", "/usr/bin/python3", "-c", ARM_PRIVILEGED_INSTALL_HELPER],
+                ["pkexec", sys.executable, "-c", ARM_PRIVILEGED_INSTALL_HELPER],
                 input=payload, check=False, capture_output=True,
             )
             if result.returncode != 0:

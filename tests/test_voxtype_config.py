@@ -120,7 +120,7 @@ class VoxtypeConfigTests(unittest.TestCase):
             voxtype_config.install_arm_onnx()
 
         install_call = run.call_args_list[0]
-        self.assertEqual(install_call.args[0][:3], ["pkexec", "/usr/bin/python3", "-c"])
+        self.assertEqual(install_call.args[0][:3], ["pkexec", voxtype_config.sys.executable, "-c"])
         self.assertEqual(install_call.kwargs["input"], payload)
         self.assertNotIn(str(target), install_call.args[0])
 
