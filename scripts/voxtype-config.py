@@ -213,7 +213,7 @@ def restart_daemon() -> None:
 
 
 def set_engine(engine: str) -> None:
-    """Switch engine through Voxtype so binary feature gates stay authoritative."""
+    """Switch engines across current and older Voxtype CLI versions."""
     result = subprocess.run(
         [voxtype_command(), "config", "set", "engine", engine.lower()],
         check=False,
@@ -226,7 +226,14 @@ def set_engine(engine: str) -> None:
             raise EngineUnavailable(
                 f"Voxtype is using the standard Whisper binary. Enable ONNX support before selecting {engine}."
             )
-        raise RuntimeError(detail or f"Voxtype rejected the {engine} engine")
+        # Voxtype 0.7.2 has no `config set` subcommand.  Keep compatibility
+        # with that release by updating the same user config the newer CLI
+        # would update.  The feature probe runs before this function.
+        if "unexpected argument" not in detail.lower() and "unrecognized subcommand" not in detail.lower():
+            raise RuntimeError(detail or f"Voxtype rejected the {engine} engine")
+        text = set_value(read_text(), "", "engine", engine.lower())
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        CONFIG.write_text(text, encoding="utf-8")
 
 
 def check_engine_feature(engine: str) -> None:
@@ -282,6 +289,22 @@ def check_engine_feature(engine: str) -> None:
     normalized = engine.lower()
     if normalized in features:
         return
+
+    # Some distro wrappers expose only one default feature in this summary
+    # even when the selected binary has additional ONNX engines.  Probe the
+    # actual engine with an invalid audio file: a supported engine proceeds to
+    # audio parsing, while an unsupported one fails with "not compiled".
+    if normalized in ONNX_ENGINES:
+        probe = subprocess.run(
+            [voxtype_command(), "--engine", normalized, "transcribe", os.devnull],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        probe_detail = f"{probe.stdout}\n{probe.stderr}".lower()
+        if "not compiled" not in probe_detail and "compiled with" not in probe_detail:
+            return
     raise EngineUnavailable(
         f"engine '{normalized}' is not compiled into this binary. "
         "The selected model was not downloaded. Enable an ONNX Voxtype "
