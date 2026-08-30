@@ -175,6 +175,36 @@ class VoxtypeConfigTests(unittest.TestCase):
         self.assertEqual(snapshot["engine"], "whisper")
         self.assertEqual(snapshot["model_id"], "")
 
+    def test_model_files_present_rejects_corrupt_file(self) -> None:
+        spec = {
+            "engine": "sensevoice",
+            "model": "test",
+            "directory": "test-model",
+            "source": "https://example.invalid/",
+            "files": [("model.bin", "0" * 64, 4)],
+        }
+        model_dir = self.models / "test-model"
+        model_dir.mkdir(parents=True)
+        (model_dir / "model.bin").write_bytes(b"good")
+        with mock.patch.object(voxtype_config, "SASAYAKI_MODELS", {"test": spec}):
+            self.assertFalse(voxtype_config.model_files_present("test"))
+
+    def test_model_files_present_rejects_symlink(self) -> None:
+        spec = {
+            "engine": "sensevoice",
+            "model": "test",
+            "directory": "test-model",
+            "source": "https://example.invalid/",
+            "files": [("model.bin", "0" * 64, 4)],
+        }
+        model_dir = self.models / "test-model"
+        model_dir.mkdir(parents=True)
+        outside = self.models / "outside.bin"
+        outside.write_bytes(b"good")
+        (model_dir / "model.bin").symlink_to(outside)
+        with mock.patch.object(voxtype_config, "SASAYAKI_MODELS", {"test": spec}):
+            self.assertFalse(voxtype_config.model_files_present("test"))
+
     def test_model_download_rejects_response_over_declared_size(self) -> None:
         class OversizedResponse:
             def __enter__(self):

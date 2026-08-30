@@ -496,8 +496,13 @@ def model_files_present(model_id: str) -> bool:
     spec = SASAYAKI_MODELS[model_id]
     model_dir = MODELS_DIR / spec["directory"]
     return all(
-        (model_dir / filename).is_file() and (model_dir / filename).stat().st_size == size
-        for filename, _, size in spec["files"]
+        (
+            (target := model_dir / filename).is_file()
+            and not target.is_symlink()
+            and target.stat().st_size == size
+            and sha256_file(target) == wanted_sha
+        )
+        for filename, wanted_sha, size in spec["files"]
     )
 
 
