@@ -20,6 +20,10 @@ Voxtype Enhance is an Omarchy experience-enhancement plugin for Voxtype voice in
 ## Features
 
 - Native Omarchy top-bar microphone indicator.
+- The microphone icon gently breathes from its theme color toward yellow while
+  Voxtype is recording, then returns to its normal appearance during
+  transcription and when idle.
+- Recording animation can be enabled or disabled from the Voxtype settings panel.
 - Three Sasayaki-compatible offline speech models, with engine selection handled automatically.
 - Automatic model download, installation, file-size checking, and SHA-256 verification.
 - Chinese, English, Japanese, Korean, and automatic language choices.

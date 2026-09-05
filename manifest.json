@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "hancore.voxtype-enhance",
   "name": "Voxtype Enhance",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "author": "HANCORE",
   "license": "MIT",
   "description": "A native Omarchy control center for Voxtype dictation with model downloads, language, and terminal-aware universal paste controls.",

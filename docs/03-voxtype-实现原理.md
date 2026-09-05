@@ -20,7 +20,7 @@ F9 按下
 | --- | --- |
 | 常驻方式 | systemd 用户服务 `voxtype.service`：`ExecStart=/usr/bin/voxtype daemon`，`PartOf=graphical-session.target`，崩溃 5s 自动重启 |
 | 录音 | ALSA/PipeWire 默认输入设备；录音期间自动暂停 MPRIS 媒体播放器（Spotify 等） |
-| 状态输出 | `$XDG_RUNTIME_DIR/voxtype/state` 写入 `idle/recording/transcribing`，供顶栏/面板集成读取 |
+| 状态输出 | `$XDG_RUNTIME_DIR/voxtype/state` 写入 `idle/recording/transcribing`，供顶栏/面板集成读取；顶栏在 `recording` 时让话筒从当前主题色缓慢呼吸到黄色 |
 | OSD | 可选子进程画浮动音量条式反馈（voxtype-osd-quickshell 变体可用） |
 
 ## 七引擎与两套二进制

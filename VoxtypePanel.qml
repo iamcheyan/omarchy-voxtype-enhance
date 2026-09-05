@@ -256,6 +256,49 @@ Panel {
                     font.pixelSize: Style.font.caption
                 }
 
+                Item {
+                    width: parent.width
+                    height: Math.max(Style.space(42), animationText.implicitHeight + Style.space(8))
+
+                    Column {
+                        id: animationText
+                        anchors.left: parent.left
+                        anchors.right: animationToggle.left
+                        anchors.rightMargin: Style.space(12)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(2)
+
+                        Text {
+                            text: "Recording animation"
+                            color: root.panelForeground
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                        }
+                        Text {
+                            text: "Gently breathe the microphone while listening"
+                            color: root.panelMuted
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.caption
+                        }
+                    }
+
+                    ToggleSwitch {
+                        id: animationToggle
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.setting("recordingAnimation", true) === true
+                        foreground: root.panelForeground
+                        onToggled: {
+                            if (root.hostWidget && typeof root.hostWidget.setRecordingAnimationEnabled === "function") {
+                                root.hostWidget.setRecordingAnimationEnabled(!checked);
+                            }
+                        }
+                    }
+                }
+
                 Text { text: "Model"; color: root.panelMuted; font.pixelSize: Style.font.caption }
                 Column {
                     width: parent.width; spacing: Style.space(6)
