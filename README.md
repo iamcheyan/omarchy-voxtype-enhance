@@ -144,7 +144,18 @@ Model downloads require network access only when a selected model is not already
 
 ## Uninstallation
 
-Disable or remove the plugin using Omarchy's plugin manager. Removing the plugin removes the top-bar control and plugin files. It does not remove Voxtype, user recordings, or downloaded models; use `Clear plugin data` before removal if those model files should also be deleted.
+Before disabling or removing the plugin, switch Output to a non-universal mode once
+so the plugin removes its `pre_output_command` and `post_output_command` hooks from
+`~/.config/voxtype/config.toml`:
+
+```bash
+python3 scripts/voxtype-config.py set mode type
+```
+
+Then disable or remove the plugin using Omarchy's plugin manager. Removing the
+plugin removes the top-bar control and plugin files. It does not remove Voxtype,
+user recordings, or downloaded models; use `Clear plugin data` before removal if
+those model files should also be deleted.
 
 ## Validation
 

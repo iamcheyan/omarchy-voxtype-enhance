@@ -1,7 +1,7 @@
 # 商店审核注意事项（Marketplace Review Notes）
 
 > 2026-08-22 整理。来源：本插件 issue
-> [#1428](https://github.com/HANCORE-linux/omarchy-plugin-marketplace/issues/1428)
+> [#1428](https://github.com/omacom/omarchy-plugin-marketplace/issues/1428)
 > 及兄弟插件 #1468、#1401 的审核往返。供上架前自查与复审对照。
 
 ## 一、商店审核机制速览
@@ -69,11 +69,8 @@ ARM 则只有用户明确确认后才下载并校验固定版本的官方 `voxty
 - [x] ARM 安装提权边界不重新打开用户可写临时路径；校验后的有界字节通过 stdin
       传给固定内联 helper，再由 root 在 `/usr/local/bin` 原子替换目标文件
 - [x] tests/ 24 个用例可跑，覆盖 ARM binary selection、提权字节传输、下载边界、配置回读和 universal paste
-- [ ] **卸载卫生**：universal paste 模式把 `pre/post_output_command`（指向本插件脚本的
-      绝对路径）写进用户 `~/.config/voxtype/config.toml`，插件移除后钩子残留、指向已删除路径。
-      审核清单的 explicit consent 条款会盯这个；建议提供 clear 动作并在 README 卸载节写明。
-- [ ] hyprctl dispatch 表达式为字符串拼接（当前是常量，安全）；保持常量或改列表传参，
-      别让未来改动引入插值。
-- [ ] 硬编码 UID 路径回退（`/home/<uid>/…` 形态）——换成 `$HOME`/`Path.home()`。
-- [ ] 每次写配置都 `systemctl --user restart voxtype.service`：基线已标记此能力，
-      README 需解释为何必须重启（voxtype 不热载配置）。
+- [x] **卸载卫生**：README 卸载节要求先切换到非 universal 输出模式，
+      清理 `pre/post_output_command`，再移除插件；模型和其它 Voxtype 数据仍由用户决定是否保留。
+- [x] hyprctl dispatch 表达式仅由固定常量组成，没有用户输入插值；后续改动不得引入动态拼接。
+- [x] 路径回退使用 `Path.home()` / XDG 路径；没有硬编码 UID 路径。
+- [x] 配置变更后重启既有的用户级 `voxtype.service`，README 已说明 Voxtype 不会热加载配置。
