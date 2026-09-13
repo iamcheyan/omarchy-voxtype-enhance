@@ -236,7 +236,15 @@ class VoxtypeConfigTests(unittest.TestCase):
             mock.patch.object(voxtype_config.subprocess, "run") as run,
         ):
             voxtype_config.ensure_voxtype_binary()
-        run.assert_not_called()
+            run.assert_not_called()
+
+    def test_ensure_voxtype_binary_explains_nixos_install_route(self) -> None:
+        with (
+            mock.patch.object(voxtype_config.shutil, "which", return_value=None),
+            mock.patch.object(voxtype_config, "is_nixos", return_value=True),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "NixOS.*voxtype-onnx.*pacman"):
+                voxtype_config.ensure_voxtype_binary()
 
     def test_ensure_voxtype_binary_installs_via_pkexec_when_missing(self) -> None:
         installed = subprocess.CompletedProcess([], 0)
@@ -246,6 +254,7 @@ class VoxtypeConfigTests(unittest.TestCase):
                 "which",
                 side_effect=[None, "/usr/bin/pkexec", "/usr/bin/pacman", "/usr/bin/voxtype"],
             ),
+            mock.patch.object(voxtype_config, "is_nixos", return_value=False),
             mock.patch.object(voxtype_config.subprocess, "run", return_value=installed) as run,
         ):
             voxtype_config.ensure_voxtype_binary()
@@ -262,6 +271,7 @@ class VoxtypeConfigTests(unittest.TestCase):
                 "which",
                 side_effect=[None, "/usr/bin/pkexec", "/usr/bin/pacman"],
             ),
+            mock.patch.object(voxtype_config, "is_nixos", return_value=False),
             mock.patch.object(voxtype_config.subprocess, "run", return_value=cancelled),
         ):
             with self.assertRaisesRegex(RuntimeError, "Dismissed"):

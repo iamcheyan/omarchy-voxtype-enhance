@@ -392,6 +392,10 @@ def install_arm_onnx() -> None:
     restart_daemon()
 
 
+def is_nixos() -> bool:
+    return Path("/etc/NIXOS").exists()
+
+
 def ensure_voxtype_binary() -> None:
     """Install Omarchy's voxtype-bin package when the binary is missing.
 
@@ -401,6 +405,12 @@ def ensure_voxtype_binary() -> None:
     """
     if shutil.which("voxtype") is not None:
         return
+    if is_nixos():
+        raise RuntimeError(
+            "Voxtype is not installed. On NixOS, add voxtype-onnx (or another "
+            "Voxtype package) to the system configuration and rebuild; this "
+            "plugin will not invoke pacman."
+        )
     missing = [name for name in ("pkexec", "pacman") if shutil.which(name) is None]
     if missing:
         raise RuntimeError(

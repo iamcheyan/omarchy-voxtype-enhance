@@ -83,6 +83,11 @@ any panel action that changes settings first offers to install Omarchy's
 authentication prompt leaves the system unchanged; read-only status queries
 never trigger an installation.
 
+On NixOS, the plugin never invokes `pacman`. Install Voxtype declaratively in
+the NixOS configuration first, for example with `voxtype-onnx`, then rebuild
+the system. The panel reports this route instead of attempting an imperative
+package install.
+
 Models are stored under:
 
 ```text
