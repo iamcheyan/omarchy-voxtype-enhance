@@ -44,7 +44,12 @@ omarchy plugin add https://github.com/iamcheyan/omarchy-voxtype-enhance.git --en
 
 The plugin provides a `bar-widget` entry point. If the microphone icon is not automatically placed in the top bar, add `Voxtype Enhance` to the right side of the bar layout.
 
-The plugin does not register or replace Voxtype's recording shortcut. Use the shortcut already configured by Voxtype, for example holding `HOME` to record and releasing it to transcribe.
+The settings panel includes an optional middle-mouse dictation toggle. It is
+off by default to avoid conflicts with existing user bindings. When enabled,
+the first click on middle mouse (`mouse:274`) starts Voxtype recording and the
+second click stops it and transcribes. The binding consumes the middle-button
+event, so applications do not receive it as the usual primary-selection paste.
+F9 and the existing keyboard shortcuts remain available.
 
 ## Models
 
@@ -119,8 +124,7 @@ The panel updates `~/.config/voxtype/config.toml` only after the user selects a 
 
 The `Clear plugin data` link removes only the three model directories managed by this plugin and restores SenseVoice int8, Chinese, and Omarchy universal paste. It does not remove Whisper models, recordings, hotkeys, or unrelated Voxtype data. After clearing, choose a model to download it again.
 
-The plugin does not edit Hyprland bindings, change the recording hotkey, or
-install a system service. When Voxtype is already installed, model selection
+The plugin does not install a system service. When Voxtype is already installed, model selection
 does not require privileges. Exactly three operations elevate through `pkexec`;
 all are visible, user-initiated, and run fixed commands:
 
