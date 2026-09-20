@@ -18,6 +18,7 @@ BarWidget {
     property int spinnerFrame: 0
     property real recordingMix: 0.0
     readonly property bool recordingAnimationEnabled: setting("recordingAnimation", true) === true
+    readonly property bool middleMouseToggleEnabled: setting("middleMouseToggle", false) === true
     readonly property color normalForeground: root.bar ? root.bar.barForeground : Color.foreground
     readonly property color recordingYellow: "#f2c94c"
     readonly property var spinnerFrames: ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
@@ -39,6 +40,29 @@ BarWidget {
     function setRecordingAnimationEnabled(enabled) {
         root.settings = Object.assign({}, root.settings, { recordingAnimation: enabled });
         if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings);
+    }
+
+    function setMiddleMouseToggleEnabled(enabled) {
+        root.settings = Object.assign({}, root.settings, { middleMouseToggle: enabled });
+        if (root.bar && root.bar.shell) root.bar.shell.updateEntryInline(root.moduleName, root.settings);
+        middleMouseBindingProcess.command = [
+            "hyprctl", "eval",
+            enabled
+                ? 'hl.unbind("mouse:274"); hl.bind("mouse:274", hl.dsp.exec_cmd("voxtype record toggle"), { description = "Toggle dictation with middle mouse" })'
+                : 'hl.unbind("mouse:274")'
+        ];
+        middleMouseBindingProcess.running = true;
+    }
+
+    function applyMiddleMouseBinding() {
+        root.setMiddleMouseToggleEnabled(root.middleMouseToggleEnabled);
+    }
+
+    Component.onCompleted: Qt.callLater(root.applyMiddleMouseBinding)
+
+    Process {
+        id: middleMouseBindingProcess
+        running: false
     }
 
     FileView {

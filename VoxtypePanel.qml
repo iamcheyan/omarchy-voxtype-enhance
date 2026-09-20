@@ -299,6 +299,49 @@ Panel {
                     }
                 }
 
+                Item {
+                    width: parent.width
+                    height: Math.max(Style.space(42), middleMouseText.implicitHeight + Style.space(8))
+
+                    Column {
+                        id: middleMouseText
+                        anchors.left: parent.left
+                        anchors.right: middleMouseToggle.left
+                        anchors.rightMargin: Style.space(12)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(2)
+
+                        Text {
+                            text: "Middle mouse dictation"
+                            color: root.panelForeground
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.body
+                            font.bold: true
+                        }
+                        Text {
+                            text: "Click once to start, click again to transcribe; disables middle-click paste"
+                            color: root.panelMuted
+                            wrapMode: Text.WordWrap
+                            width: parent.width
+                            font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                            font.pixelSize: Style.font.caption
+                        }
+                    }
+
+                    ToggleSwitch {
+                        id: middleMouseToggle
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        checked: root.hostWidget ? root.hostWidget.middleMouseToggleEnabled : false
+                        foreground: root.panelForeground
+                        onToggled: {
+                            if (root.hostWidget && typeof root.hostWidget.setMiddleMouseToggleEnabled === "function") {
+                                root.hostWidget.setMiddleMouseToggleEnabled(!checked);
+                            }
+                        }
+                    }
+                }
+
                 Text { text: "Model"; color: root.panelMuted; font.pixelSize: Style.font.caption }
                 Column {
                     width: parent.width; spacing: Style.space(6)
