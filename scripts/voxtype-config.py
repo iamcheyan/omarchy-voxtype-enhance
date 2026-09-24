@@ -4,16 +4,19 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
 import platform
 import re
+import secrets
 import subprocess
 import sys
 import tempfile
 import urllib.request
 import shutil
+import stat
 from pathlib import Path
 
 
@@ -88,6 +91,149 @@ except BaseException:
 '''
 
 
+class PathSecurityError(RuntimeError):
+    """A managed path crossed a symlink or an unexpected owner."""
+
+
+_FIXED_SYSTEM_ANCESTORS = {"/", "/home", "/tmp", "/usr", "/usr/local", "/var"}
+_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+
+
+def _is_fixed_system_ancestor(path: Path) -> bool:
+    return str(path) in _FIXED_SYSTEM_ANCESTORS
+
+
+def _check_owner(path: Path, info: os.stat_result, *, final: bool = False) -> None:
+    if info.st_uid == os.geteuid():
+        return
+    if not final and info.st_uid == 0 and _is_fixed_system_ancestor(path):
+        return
+    raise PathSecurityError(f"managed path component has unexpected owner: {path}")
+
+
+def _open_directory(path: Path, *, create: bool = False, mode: int = 0o700) -> int:
+    """Open an absolute directory through owner-checked, no-follow components."""
+    if not path.is_absolute():
+        raise PathSecurityError(f"managed path must be absolute: {path}")
+    fd = os.open("/", _DIR_FLAGS)
+    current = Path("/")
+    try:
+        for component in path.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise PathSecurityError(f"unsafe managed path: {path}")
+            next_path = current / component
+            try:
+                child = os.open(component, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError as error:
+                if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                    raise PathSecurityError(f"managed path contains a symlink or non-directory: {next_path}") from error
+                if error.errno != errno.ENOENT:
+                    raise
+                if not create:
+                    raise
+                os.mkdir(component, mode, dir_fd=fd)
+                child = os.open(component, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode):
+                os.close(child)
+                raise PathSecurityError(f"managed path component is not a directory: {next_path}")
+            try:
+                _check_owner(next_path, info)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd)
+            fd, current = child, next_path
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _open_parent(path: Path, *, create: bool = False) -> tuple[int, str]:
+    parent = path.parent
+    fd = _open_directory(parent, create=create)
+    name = path.name
+    if not name or name in {".", ".."}:
+        os.close(fd)
+        raise PathSecurityError(f"unsafe managed path: {path}")
+    return fd, name
+
+
+def _existing_entry(parent_fd: int, name: str, path: Path) -> os.stat_result:
+    try:
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        raise
+    if stat.S_ISLNK(info.st_mode):
+        raise PathSecurityError(f"managed path is a symlink: {path}")
+    _check_owner(path, info, final=True)
+    return info
+
+
+def _read_managed_text(path: Path) -> str:
+    parent_fd, name = _open_parent(path)
+    try:
+        try:
+            _existing_entry(parent_fd, name, path)
+        except FileNotFoundError:
+            return ""
+        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                raise PathSecurityError(f"managed path is not a regular file: {path}")
+            _check_owner(path, info, final=True)
+            with os.fdopen(fd, "r", encoding="utf-8") as handle:
+                fd = -1
+                return handle.read()
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _atomic_write_bytes(path: Path, payload: bytes, mode: int = 0o600) -> None:
+    """Atomically replace a managed file using only its parent descriptor."""
+    parent_fd, name = _open_parent(path, create=True)
+    temporary_name = f".{name}.{secrets.token_hex(12)}.tmp"
+    temp_fd = -1
+    try:
+        try:
+            existing = _existing_entry(parent_fd, name, path)
+            if not stat.S_ISREG(existing.st_mode):
+                raise PathSecurityError(f"managed path is not a regular file: {path}")
+            mode = existing.st_mode & 0o777
+        except FileNotFoundError:
+            pass
+        temp_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+            mode,
+            dir_fd=parent_fd,
+        )
+        with os.fdopen(temp_fd, "wb") as handle:
+            temp_fd = -1
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        if temp_fd >= 0:
+            os.close(temp_fd)
+        try:
+            os.unlink(temporary_name, dir_fd=parent_fd)
+        except FileNotFoundError:
+            pass
+        os.close(parent_fd)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    _atomic_write_bytes(path, text.encode("utf-8"))
+
+
 class EngineUnavailable(RuntimeError):
     """The selected engine needs an ONNX Voxtype binary."""
 
@@ -122,7 +268,7 @@ def voxtype_command() -> str:
 
 def read_text() -> str:
     try:
-        return CONFIG.read_text(encoding="utf-8")
+        return _read_managed_text(CONFIG)
     except FileNotFoundError:
         return ""
 
@@ -232,8 +378,7 @@ def set_engine(engine: str) -> None:
         if "unexpected argument" not in detail.lower() and "unrecognized subcommand" not in detail.lower():
             raise RuntimeError(detail or f"Voxtype rejected the {engine} engine")
         text = set_value(read_text(), "", "engine", engine.lower())
-        CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(text, encoding="utf-8")
+        _atomic_write_text(CONFIG, text)
 
 
 def check_engine_feature(engine: str) -> None:
@@ -378,10 +523,9 @@ def install_arm_onnx() -> None:
         finally:
             temp.unlink(missing_ok=True)
 
-    ARM_ONNX_SERVICE_OVERRIDE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    ARM_ONNX_SERVICE_OVERRIDE.write_text(
+    _atomic_write_text(
+        ARM_ONNX_SERVICE_OVERRIDE,
         "[Service]\nExecStart=\nExecStart=/usr/local/bin/voxtype daemon\n",
-        encoding="utf-8",
     )
     daemon_reload = subprocess.run(
         ["systemctl", "--user", "daemon-reload"], check=False, capture_output=True, text=True
@@ -451,11 +595,31 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _file_matches(parent_fd: int, filename: str, path: Path, wanted_sha: str, wanted_size: int) -> bool:
+    try:
+        info = _existing_entry(parent_fd, filename, path)
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode) or info.st_size != wanted_size:
+        return False
+    fd = os.open(filename, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        digest = hashlib.sha256()
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest() == wanted_sha
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
 def ensure_model(model_id: str) -> None:
-    """Download Sasayaki's pinned model files into Voxtype's ONNX layout."""
+    """Download Sasayaki's pinned model files using model-dir descriptors."""
     spec = SASAYAKI_MODELS[model_id]
     target_dir = MODELS_DIR / spec["directory"]
-    target_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    model_fd = _open_directory(target_dir, create=True)
     total_size = sum(item[2] for item in spec["files"])
     completed_size = 0
 
@@ -463,65 +627,121 @@ def ensure_model(model_id: str) -> None:
         fraction = min(1.0, done / total_size) if total_size else 1.0
         print(f"VOXTYPE_ENHANCE_PROGRESS {fraction:.6f} {message}", file=sys.stderr, flush=True)
 
-    report(0, "Checking model files")
-    for filename, wanted_sha, wanted_size in spec["files"]:
-        target = target_dir / filename
-        if target.is_file() and target.stat().st_size == wanted_size and sha256_file(target) == wanted_sha:
-            completed_size += wanted_size
-            report(completed_size, f"Verified {filename}")
-            continue
-        fd, temp_name = tempfile.mkstemp(prefix=f".{filename}.", suffix=".part", dir=target_dir)
-        os.close(fd)
-        temp = Path(temp_name)
-        try:
-            request = urllib.request.Request(
-                spec["source"] + filename,
-                headers={"User-Agent": "omarchy-voxtype-enhance/0.1"},
+    try:
+        report(0, "Checking model files")
+        for filename, wanted_sha, wanted_size in spec["files"]:
+            target = target_dir / filename
+            if _file_matches(model_fd, filename, target, wanted_sha, wanted_size):
+                completed_size += wanted_size
+                report(completed_size, f"Verified {filename}")
+                continue
+            temporary_name = f".{filename}.{secrets.token_hex(12)}.part"
+            temp_fd = os.open(
+                temporary_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+                dir_fd=model_fd,
             )
-            with urllib.request.urlopen(request, timeout=60) as response, temp.open("wb") as output:
+            try:
+                digest = hashlib.sha256()
                 downloaded = 0
-                while True:
-                    # Read at most one byte beyond the declared size.  This
-                    # keeps a malicious or broken response from consuming
-                    # unbounded disk space before the checksum/size check.
-                    remaining = wanted_size - downloaded
-                    chunk = response.read(min(1024 * 1024, remaining + 1))
-                    if not chunk:
-                        break
-                    if len(chunk) > remaining:
-                        raise RuntimeError(f"download exceeds declared size for {filename}")
-                    output.write(chunk)
-                    downloaded += len(chunk)
-                    report(completed_size + downloaded, f"Downloading {filename}")
-            if temp.stat().st_size != wanted_size or sha256_file(temp) != wanted_sha:
-                raise RuntimeError(f"checksum or size mismatch for {filename}")
-            os.replace(temp, target)
-            completed_size += wanted_size
-            report(completed_size, f"Verified {filename}")
-        finally:
-            temp.unlink(missing_ok=True)
+                request = urllib.request.Request(
+                    spec["source"] + filename,
+                    headers={"User-Agent": "omarchy-voxtype-enhance/0.1"},
+                )
+                with urllib.request.urlopen(request, timeout=60) as response, os.fdopen(temp_fd, "wb") as output:
+                    temp_fd = -1
+                    while True:
+                        remaining = wanted_size - downloaded
+                        chunk = response.read(min(1024 * 1024, remaining + 1))
+                        if not chunk:
+                            break
+                        if len(chunk) > remaining:
+                            raise RuntimeError(f"download exceeds declared size for {filename}")
+                        output.write(chunk)
+                        digest.update(chunk)
+                        downloaded += len(chunk)
+                        report(completed_size + downloaded, f"Downloading {filename}")
+                    output.flush()
+                    os.fsync(output.fileno())
+                if downloaded != wanted_size or digest.hexdigest() != wanted_sha:
+                    raise RuntimeError(f"checksum or size mismatch for {filename}")
+                # Refuse a symlink already occupying the destination; rename is
+                # descriptor-relative and never follows it if it appears later.
+                try:
+                    _existing_entry(model_fd, filename, target)
+                except FileNotFoundError:
+                    pass
+                os.replace(temporary_name, filename, src_dir_fd=model_fd, dst_dir_fd=model_fd)
+                os.fsync(model_fd)
+                completed_size += wanted_size
+                report(completed_size, f"Verified {filename}")
+            finally:
+                if temp_fd >= 0:
+                    os.close(temp_fd)
+                try:
+                    os.unlink(temporary_name, dir_fd=model_fd)
+                except FileNotFoundError:
+                    pass
+    finally:
+        os.close(model_fd)
 
 
 def model_files_present(model_id: str) -> bool:
     spec = SASAYAKI_MODELS[model_id]
     model_dir = MODELS_DIR / spec["directory"]
-    return all(
-        (
-            (target := model_dir / filename).is_file()
-            and not target.is_symlink()
-            and target.stat().st_size == size
-            and sha256_file(target) == wanted_sha
+    try:
+        model_fd = _open_directory(model_dir)
+    except (FileNotFoundError, PathSecurityError, NotADirectoryError):
+        return False
+    try:
+        return all(
+            _file_matches(model_fd, filename, model_dir / filename, wanted_sha, size)
+            for filename, wanted_sha, size in spec["files"]
         )
-        for filename, wanted_sha, size in spec["files"]
-    )
+    except (FileNotFoundError, PathSecurityError, NotADirectoryError):
+        return False
+    finally:
+        os.close(model_fd)
+
+
+def _remove_tree(parent_fd: int, name: str, path: Path) -> None:
+    info = _existing_entry(parent_fd, name, path)
+    if not stat.S_ISDIR(info.st_mode):
+        raise PathSecurityError(f"managed model path is not a directory: {path}")
+    child_fd = os.open(name, _DIR_FLAGS | os.O_NOFOLLOW, dir_fd=parent_fd)
+    try:
+        _check_owner(path, os.fstat(child_fd), final=True)
+        for entry in os.scandir(child_fd):
+            entry_path = path / entry.name
+            if entry.is_symlink():
+                raise PathSecurityError(f"managed path is a symlink: {entry_path}")
+            if entry.is_dir(follow_symlinks=False):
+                _remove_tree(child_fd, entry.name, entry_path)
+            else:
+                _existing_entry(child_fd, entry.name, entry_path)
+                os.unlink(entry.name, dir_fd=child_fd)
+        os.fsync(child_fd)
+    finally:
+        os.close(child_fd)
+    os.unlink(name, dir_fd=parent_fd)
 
 
 def reset_plugin_data() -> None:
     ensure_voxtype_binary()
-    for spec in SASAYAKI_MODELS.values():
-        model_dir = MODELS_DIR / spec["directory"]
-        if model_dir.is_dir():
-            shutil.rmtree(model_dir)
+    try:
+        models_fd = _open_directory(MODELS_DIR, create=True)
+        try:
+            for spec in SASAYAKI_MODELS.values():
+                model_dir = MODELS_DIR / spec["directory"]
+                try:
+                    _remove_tree(models_fd, spec["directory"], model_dir)
+                except FileNotFoundError:
+                    pass
+        finally:
+            os.close(models_fd)
+    except PathSecurityError:
+        raise
 
     set_engine("sensevoice")
 
@@ -531,8 +751,7 @@ def reset_plugin_data() -> None:
     text = set_value(text, "output", "mode", "clipboard")
     text = set_value(text, "output", "pre_output_command", UNIVERSAL_SNAPSHOT)
     text = set_value(text, "output", "post_output_command", UNIVERSAL_PASTE_COMMAND)
-    CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(text, encoding="utf-8")
+    _atomic_write_text(CONFIG, text)
     # Do not restart here: the default model was intentionally removed and
     # restarting would leave systemd in a crash loop until the user selects a
     # model and the downloader installs it again.
@@ -598,8 +817,7 @@ def set_setting(setting: str, new_value: str) -> None:
         # SenseVoice immediately after a successful download).
         text = read_text()
         text = set_value(text, selected["engine"], "model", selected["model"])
-        CONFIG.parent.mkdir(parents=True, exist_ok=True)
-        CONFIG.write_text(text, encoding="utf-8")
+        _atomic_write_text(CONFIG, text)
         verify_model_selection(selected)
         restart_daemon()
         return
@@ -626,8 +844,7 @@ def set_setting(setting: str, new_value: str) -> None:
         text = set_value(text, "output", "paste_keys", new_value)
     else:
         raise ValueError(f"unsupported setting: {setting}")
-    CONFIG.parent.mkdir(parents=True, exist_ok=True)
-    CONFIG.write_text(text, encoding="utf-8")
+    _atomic_write_text(CONFIG, text)
     restart_daemon()
 
 

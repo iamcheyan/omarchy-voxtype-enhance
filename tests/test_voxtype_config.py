@@ -4,6 +4,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -141,6 +142,7 @@ class VoxtypeConfigTests(unittest.TestCase):
 
     def test_model_switch_rejects_missing_engine_readback(self) -> None:
         with (
+            mock.patch.object(voxtype_config, "ensure_voxtype_binary"),
             mock.patch.object(voxtype_config, "check_engine_feature"),
             mock.patch.object(voxtype_config, "ensure_model"),
             mock.patch.object(voxtype_config, "set_engine"),
@@ -156,6 +158,7 @@ class VoxtypeConfigTests(unittest.TestCase):
             self.config.write_text(text, encoding="utf-8")
 
         with (
+            mock.patch.object(voxtype_config, "ensure_voxtype_binary"),
             mock.patch.object(voxtype_config, "check_engine_feature"),
             mock.patch.object(voxtype_config, "ensure_model"),
             mock.patch.object(voxtype_config, "set_engine", side_effect=persist_engine),
@@ -204,6 +207,75 @@ class VoxtypeConfigTests(unittest.TestCase):
         (model_dir / "model.bin").symlink_to(outside)
         with mock.patch.object(voxtype_config, "SASAYAKI_MODELS", {"test": spec}):
             self.assertFalse(voxtype_config.model_files_present("test"))
+
+    def test_config_symlinked_ancestor_is_rejected(self) -> None:
+        real_config_dir = self.models / "real-config"
+        real_config_dir.mkdir(parents=True)
+        link_parent = self.models / "config-link"
+        link_parent.symlink_to(real_config_dir, target_is_directory=True)
+        with mock.patch.object(voxtype_config, "CONFIG", link_parent / "config.toml"):
+            with self.assertRaisesRegex(voxtype_config.PathSecurityError, "symlink"):
+                voxtype_config._atomic_write_text(voxtype_config.CONFIG, "engine = \\\"whisper\\\"\\n")
+
+    def test_service_override_symlinked_ancestor_is_rejected(self) -> None:
+        real_parent = self.models / "real-service"
+        real_parent.mkdir(parents=True)
+        link_parent = self.models / "service-link"
+        link_parent.symlink_to(real_parent, target_is_directory=True)
+        override = link_parent / "10-arm-onnx.conf"
+        with self.assertRaisesRegex(voxtype_config.PathSecurityError, "symlink"):
+            voxtype_config._atomic_write_text(override, "[Service]\\n")
+
+    def test_unowned_ancestor_is_rejected(self) -> None:
+        with (
+            mock.patch.object(voxtype_config.os, "geteuid", return_value=os.geteuid() + 1),
+            mock.patch.object(voxtype_config, "_is_fixed_system_ancestor", return_value=False),
+        ):
+            with self.assertRaisesRegex(voxtype_config.PathSecurityError, "owner"):
+                voxtype_config._atomic_write_text(self.config, "changed\\n")
+
+    def test_atomic_write_is_descriptor_relative_and_replaces_file(self) -> None:
+        original_inode = self.config.stat().st_ino
+        voxtype_config._atomic_write_text(self.config, "new contents\\n")
+        self.assertEqual(self.config.read_text(encoding="utf-8"), "new contents\\n")
+        self.assertNotEqual(self.config.stat().st_ino, original_inode)
+        self.assertEqual(list(self.config.parent.glob(".*.tmp")), [])
+
+    def test_model_directory_symlink_is_rejected(self) -> None:
+        spec = {
+            "engine": "sensevoice",
+            "model": "test",
+            "directory": "test-model",
+            "source": "https://example.invalid/",
+            "files": [("model.bin", "0" * 64, 4)],
+        }
+        outside = self.models / "outside"
+        self.models.mkdir()
+        outside.mkdir()
+        (outside / "model.bin").write_bytes(b"good")
+        (self.models / "test-model").symlink_to(outside, target_is_directory=True)
+        with mock.patch.object(voxtype_config, "SASAYAKI_MODELS", {"test": spec}):
+            self.assertFalse(voxtype_config.model_files_present("test"))
+            with self.assertRaises(voxtype_config.PathSecurityError):
+                voxtype_config.ensure_model("test")
+
+    def test_model_file_symlink_is_rejected_before_atomic_replace(self) -> None:
+        spec = {
+            "engine": "sensevoice",
+            "model": "test",
+            "directory": "test-model",
+            "source": "https://example.invalid/",
+            "files": [("model.bin", "0" * 64, 4)],
+        }
+        model_dir = self.models / "test-model"
+        model_dir.mkdir(parents=True)
+        outside = self.models / "outside.bin"
+        outside.write_bytes(b"old!")
+        (model_dir / "model.bin").symlink_to(outside)
+        with mock.patch.object(voxtype_config, "SASAYAKI_MODELS", {"test": spec}):
+            with self.assertRaisesRegex(voxtype_config.PathSecurityError, "symlink"):
+                voxtype_config._atomic_write_text(model_dir / "model.bin", "new\\n")
+        self.assertEqual(outside.read_bytes(), b"old!")
 
     def test_model_download_rejects_response_over_declared_size(self) -> None:
         class OversizedResponse:
